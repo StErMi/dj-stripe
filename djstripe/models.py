@@ -513,7 +513,7 @@ class Customer(StripeObject):
             return sub_obj
 
     def update_plan_quantity(self, quantity, charge_immediately=False):
-        self.subscribe(
+        return self.subscribe(
             plan=djstripe_settings.plan_from_stripe_id(
                 self.stripe_customer.subscription.plan.id
             ),
@@ -548,6 +548,7 @@ class Customer(StripeObject):
         if charge_immediately:
             self.send_invoice()
         subscription_made.send(sender=self, plan=plan, stripe_response=resp)
+        return resp
 
     def charge(self, amount, currency="usd", description=None, send_receipt=True, **kwargs):
         """
@@ -571,7 +572,7 @@ class Customer(StripeObject):
             obj.send_receipt()
         return obj
 
-    def add_invoice_item(self, amount, currency="usd", invoice_id=None, description=None):
+    def add_invoice_item(self, amount, currency="usd", invoice_id=None, description=None, metadata=None):
         """
         Adds an arbitrary charge or credit to the customer's upcoming invoice.
         Different than creating a charge. Charges are separate bills that get
@@ -597,12 +598,13 @@ class Customer(StripeObject):
             raise ValueError(
                 "You must supply a decimal value representing dollars."
             )
-        stripe.InvoiceItem.create(
+        return stripe.InvoiceItem.create(
             amount=int(amount * 100),  # Convert dollars into cents
             currency=currency,
             customer=self.stripe_id,
             description=description,
             invoice=invoice_id,
+            metadata=metadata,
         )
 
     def record_charge(self, charge_id):
@@ -693,6 +695,15 @@ class Invoice(StripeObject):
         if not self.paid and not self.closed:
             inv = stripe.Invoice.retrieve(self.stripe_id)
             inv.pay()
+            return True
+        return False
+
+    def close(self):
+        if not self.closed:
+            inv = stripe.Invoice.retrieve(self.stripe_id)
+            inv.closed = True
+            inv.save()
+            Invoice.sync_from_stripe_data(inv, send_receipt=False)
             return True
         return False
 
@@ -791,7 +802,7 @@ class Invoice(StripeObject):
 
     @classmethod
     def handle_event(cls, event):
-        valid_events = ["invoice.payment_failed", "invoice.payment_succeeded"]
+        valid_events = ["invoice.payment_failed", "invoice.payment_succeeded", "invoice.updated"]
         if event.kind in valid_events:
             invoice_data = event.message["data"]["object"]
             stripe_invoice = stripe.Invoice.retrieve(invoice_data["id"])
